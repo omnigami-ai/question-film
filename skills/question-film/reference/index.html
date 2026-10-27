@@ -1,0 +1,919 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ostlery · The question stays</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #17191F; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+</style>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script src="kit.js"></script>
+<script>
+// Question film: the reference film, for Ostlery (STORY.md; the founder approved it on 2026-10-26).
+// Style inspired by Spotify's video "Now you can talk to Spotify" (2026, https://www.youtube.com/shorts/Qf-iBP8X7pI):
+// an independent style study, not affiliated with or endorsed by Spotify, and none of its assets. Ostlery is a
+// fictional company made for omnigami's examples: its app's real screens (captured, assets/screens), its stays'
+// photographs (assets/stays), its mark copied exactly from assets/mark.svg.
+//
+// The device (it travels to any product that answers a request): the whole frame is the product's input box. A request
+// fills it, flush left, with the send button in its corner. Sent, the request FOLDS UP into a headline band and the real
+// answer rises into the space it leaves, so every answer frame shows the question it answers. The next request REOPENS
+// the band down over the answer. A real button in an answer (Book it) can open into the next request itself.
+// Sections are labelled KEEP (the machinery: easing, timing, the type rules, the fold, the reopen, the button opening,
+// the close) and ADAPT (the brand's tokens, fonts, mark and wordmark, the requests, the captures, the answers' layouts).
+// SKILL.md says how. Deterministic: seek(t) paints from its arguments only, on CPU canvases, ctx.reset() first.
+(() => {
+const { clamp, lerp, loadFont, loadImage } = window.kit;
+const W = 1080, H = 1920, FPS = 30, BPM = 132, BEAT = 60 / BPM;
+const b = (n) => n * BEAT;
+const canvas = document.getElementById('c');
+const g = canvas.getContext('2d', { willReadFrequently: true });
+// helper canvases (CPU-backed like the film's own): a plane for the 3D turn, and a snapshot layer
+const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
+const gb = buf.getContext('2d', { willReadFrequently: true });
+
+// ADAPT: the brand's tokens (Ostlery's brand guide): paper the app's ground, sand its quiet fill (the composer's idle send
+// button, the last request's field), card the input's white, ink its text, soft its placeholder grey, line the input's
+// hairline, rule a pressed light button, ember the brand's colour and ember2 that colour pressed, ok its success colour
+// (the field a button in the answer opens into)
+const C = { paper: '#F7F4EE', sand: '#EFEAE1', card: '#FFFFFF', ink: '#17191F', soft: '#80858E', line: '#E3DDD2', rule: '#D6CFC2', ember: '#C2482B', ember2: '#A93B20', ok: '#2E7A57' };
+// ADAPT: the product's interface face (every request, headline and label) and the wordmark's face
+const SANS = (s, w = 500) => `${Math.round(w)} ${s}px Figtree`;
+const SERIF = (s, w = 600) => `${Math.round(w)} ${s}px Newsreader`;
+// ADAPT: the mark, copied exactly from assets/mark.svg (viewBox 0 0 100 100; another viewBox: scale it into this box)
+const MARK = ['M8 92V50a42 42 0 0 1 84 0v42h-8V50a34 34 0 0 0-68 0v42z', 'M24 92V50a26 26 0 0 1 52 0v42h-8V50a18 18 0 0 0-36 0v42z', 'M40 92V50a10 10 0 0 1 20 0v42z'].map((d) => new Path2D(d));
+// ADAPT: the app's own icons (Ostlery's app), copied exactly, 24-unit boxes
+const ICON_UP = new Path2D('M12 19V5M6 11l6-6 6 6');
+const ICON_CHECK = new Path2D('M5 12.5l4.5 4.5L19 7.5');
+
+// ============================== KEEP: easing ==============================
+const r = (t, a, d) => clamp((t - a) / d);
+const out3 = (p) => 1 - (1 - clamp(p)) ** 3;
+const out5 = (p) => 1 - (1 - clamp(p)) ** 5;
+const easeIn = (p) => clamp(p) ** 2.2;
+const settle = (p) => kit.motion.settle(clamp(p), 1);
+// a CSS-style cubic bezier (x1, y1, x2, y2), solved by bisection: pure, the same answer every frame
+function bezier(x1, y1, x2, y2) {
+  const at = (s, a, c) => 3 * (1 - s) * (1 - s) * s * a + 3 * (1 - s) * s * s * c + s * s * s;
+  return (p) => {
+    p = clamp(p);
+    if (p <= 0 || p >= 1) return p;
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 32; i++) { const m = (lo + hi) / 2; if (at(m, x1, x2) < p) lo = m; else hi = m; }
+    return at((lo + hi) / 2, y1, y2);
+  };
+}
+// The inspiring film's grammar, measured from it (style.md): entrances arrive at speed and settle on a long tail, exits
+// accelerate into the next shot, a move out of a hold starts slowly and snaps through its middle. Extremes:
+const EXPO_OUT = bezier(0.16, 1, 0.3, 1);    // arrivals from off frame or from nothing
+const EXPO_IO = bezier(0.87, 0, 0.13, 1);    // a move from rest to rest: the fold, the box opening, the button opening
+const EXPO_IN = bezier(0.7, 0, 0.84, 0);     // departures
+const DRAW = bezier(0.6, 0, 0.3, 1);         // fades and fills: in and out
+const MOVE = bezier(0.45, 0, 0.15, 1);       // the composer's glide, the close's moves
+
+// ============================== KEEP: the timeline (s; 132 BPM, a beat 0.4545 s; 66 beats = 30 s) ==============================
+const FOLD = 0.78, REOPEN = 0.78, WORD = 0.62;
+const T = {
+  rise: 0.12, riseDur: 0.62,      // the New trip page rises as a sheet and lands as the ground
+  iso: b(3), isoDur: 0.55,        // all but the composer fades into the page's linen; the composer glides to the centre
+  type: b(4), perChar: 0.045,     // the hook typed into the real composer, a capture per key
+  expand: b(7), expandDur: 0.84,  // the composer opens into the whole frame: the words become the poster
+  iris: b(10.25), irisDur: 0.62,  // the send button swells into the first request's field
+  press: [b(17.25), b(27), b(37), b(49)],          // send pressed, on the beat
+  fold: [0, 0, 0, 0],                              // the request folds into its headline band (press + .1)
+  reopen: [0, b(23.5), 0, b(45)],                  // the band reopens over the answer as the next request
+  book: b(33),                                     // "Book it" pressed in the answer: it opens into the third request
+  booked: b(40), done: b(41),                      // the app books (spinner → Booked), then says it's done
+  toComp: b(55), toCompDur: 0.72,               // the last band closes into the composer
+  endType: b(56.5), endPerChar: 0.04,
+  endPress: b(60) - 0.1, endTurn: b(60), turnOut: 0.17, land: b(61.5),
+};
+T.fold = T.press.map((p) => p + 0.1);
+// the words' fold (one FLIP, every word on one curve): from the fold, except Book it's, which starts on its press so
+// its band is settled at the top by 17.2 s (the answer is already in place under it)
+const FLIP = 0.55;
+T.flip = T.fold.slice(); T.flip[2] = T.press[2];
+const BOOK_DIP = 0.08, BOOK_GROW = 0.5;   // Book it dips on the beat, then its rect grows to the frame
+T.bookOpen = T.book + BOOK_DIP;
+T.glide = T.endTurn + T.turnOut;
+const DURATION = b(66);
+
+// ============================== ADAPT: the captures and assets (the hook and the line, the stays) ==============================
+const S = {};
+let SCR = null;
+const K = W / 390;     // the phone page (390 css px) at the frame's width
+const HOOK_TEXT = 'Tell Ostlery the trip.';
+const LINE_TEXT = 'Plan a stay in a sentence.';
+const STAYS = ['heron-point', 'larch-hollow', 'alder-bay', 'quarry-lake', 'millpond', 'stonecrop'];
+const FOCUS = { 'heron-point': [0.32, 0.5], 'larch-hollow': [0.5, 0.5], 'alder-bay': [0.56, 0.5], 'quarry-lake': [0.52, 0.45], millpond: [0.45, 0.45], stonecrop: [0.5, 0.5], 'heron-inside': [0.62, 0.5] };
+
+// ============================== KEEP: drawing helpers ==============================
+function field(c, colour) { c.fillStyle = colour; c.fillRect(0, 0, W, H); }
+function rrect(c, x, y, w, h, rad) { kit.roundRect(c, x, y, w, h, Math.max(0, Math.min(rad, w / 2, h / 2))); }
+function disc(c, x, y, rad, colour) { if (rad <= 0) return; c.beginPath(); c.arc(x, y, rad, 0, 2 * Math.PI); c.fillStyle = colour; c.fill(); }
+function icon(c, path, x, y, size, colour, stroke) {
+  c.save(); c.translate(x - size / 2, y - size / 2); c.scale(size / 24, size / 24);
+  c.strokeStyle = colour; c.lineWidth = stroke * 24 / size; c.lineCap = 'round'; c.lineJoin = 'round'; c.stroke(path); c.restore();
+}
+function mix(a, bb, p) {
+  const A = parseInt(a.slice(1), 16), B2 = parseInt(bb.slice(1), 16);
+  const ch = (s) => Math.round(lerp((A >> s) & 255, (B2 >> s) & 255, clamp(p)));
+  return '#' + [ch(16), ch(8), ch(0)].map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+const logLerp = (a, bb, p) => Math.exp(lerp(Math.log(a), Math.log(bb), p));
+// a soft contact shadow under a card or photo (fixed blur: deterministic on the CPU canvas)
+function shadow(c, k = 1) {
+  if (k <= 0) { c.shadowColor = 'transparent'; c.shadowBlur = 0; c.shadowOffsetY = 0; return; }
+  c.shadowColor = `rgba(23,25,31,${(0.28 * k).toFixed(4)})`; c.shadowBlur = 60 * k; c.shadowOffsetY = 22 * k;
+}
+// only the shadow of a rounded rect (the rect itself drawn far off frame): for planes copied without one
+function shadowOnly(c, x, y, w, h, rad, k) {
+  if (k <= 0.002) return;
+  c.save(); shadow(c, k); c.shadowOffsetX = 4000; rrect(c, x - 4000, y, w, h, rad); c.fillStyle = '#000'; c.fill(); c.restore();
+}
+// a capture's region (css px within the capture) drawn at dx, dy with css scale s
+function shot(c, name, sx, sy, sw, sh, dx, dy, s) {
+  const cap = SCR.captures[name], img = S[name], k = cap.scale;
+  c.drawImage(img, sx * k, sy * k, sw * k, sh * k, dx, dy, sw * s, sh * s);
+}
+// a panel: a capture region on a shadowed rounded card
+function card(c, name, sx, sy, sw, sh, dx, dy, s, rad, k = 1) {
+  c.save(); shadow(c, k); rrect(c, dx, dy, sw * s, sh * s, rad); c.fillStyle = C.paper; c.fill(); c.restore();
+  c.save(); rrect(c, dx, dy, sw * s, sh * s, rad); c.clip(); shot(c, name, sx, sy, sw, sh, dx, dy, s); c.restore();
+}
+// a photograph in a rounded frame, rotated about its centre
+function photo(c, name, cx, cy, w, h, rot = 0, o = {}) {
+  const rad = o.radius ?? w * 16 / 236;
+  c.save(); c.translate(cx, cy); c.rotate(rot);
+  if (o.shadowK) { c.save(); shadow(c, o.shadowK); rrect(c, -w / 2, -h / 2, w, h, rad); c.fillStyle = '#000'; c.fill(); c.restore(); }
+  rrect(c, -w / 2, -h / 2, w, h, rad); c.clip();
+  kit.drawCover(c, S[name], -w / 2, -h / 2, w, h, o.focus || FOCUS[name] || [0.5, 0.5]);
+  c.restore();
+}
+// the app's send button (a disc, an up arrow) at any size; stroke as a share of the radius
+function sendButton(c, x, y, rad, bg, fg, stroke = 0.11, iconK = 1.1) {
+  if (rad <= 0.5) return;
+  disc(c, x, y, rad, bg); icon(c, ICON_UP, x, y, rad * iconK, fg, rad * stroke);
+}
+// a press: sinks and changes tone on the beat, then eases back
+function press(t, at) {
+  const d = t - at;
+  if (d < 0) return { s: 1, dark: 0 };
+  if (d < 0.07) { const p = out3(d / 0.07); return { s: lerp(1, 0.9, p), dark: p }; }
+  const p = settle((d - 0.07) / 0.24);
+  return { s: lerp(0.9, 1, p), dark: 1 - p };
+}
+
+// ---------- the 3D turn: a plane drawn into buf, copied in strips with perspective ----------
+const FOCAL = 2300;
+function turnY(c, src, box, cx, cy, angle) {
+  const { x, y, w, h } = box, n = Math.max(8, Math.ceil(w / 4));
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const px = (u) => { const z = u * sin, s = FOCAL / (FOCAL + z); return [cx + u * cos * s, s]; };
+  for (let i = 0; i < n; i++) {
+    const x0 = x + (i * w) / n, x1 = x + ((i + 1) * w) / n;
+    const [X0, s0] = px(x0 - cx), [X1, s1] = px(x1 - cx);
+    const s = (s0 + s1) / 2, top = cy + (y - cy) * s, bot = cy + (y + h - cy) * s;
+    const dx = Math.min(X0, X1), dw = Math.abs(X1 - X0) + 0.75;
+    if (dw < 0.2) continue;
+    c.drawImage(src, x0, y, x1 - x0, h, dx, top, dw, bot - top);
+  }
+}
+function intoBuf(draw, shade = 0) {
+  gb.reset(); draw(gb);
+  if (shade > 0) { gb.globalCompositeOperation = 'source-atop'; gb.fillStyle = `rgba(23,25,31,${shade.toFixed(3)})`; gb.fillRect(0, 0, W, H); gb.globalCompositeOperation = 'source-over'; }
+  return buf;
+}
+
+// ============================== KEEP: type, requests set flush left, word by word ==============================
+// One set of rules for every request and its headline: the interface face at 880, tracking -0.035 em, leading 0.98
+// (enough that descenders clear the line below: the film's checks measure it), flush left on a 64 px margin. A layout is a list of words with their own pose, so any word can travel from one layout to another.
+const MARGIN = 64, TRACK = -0.035, LEAD = 0.98, WT = 880, MEASURE = W - 2 * MARGIN;
+let CAP_R = 0.7;
+// "A weekend / lake cabin," → lines of words; *word* is the accent
+function parseLines(text) {
+  return String(text).split(/\s+\/\s+/).map((ln) => ln.trim().split(/\s+/).filter(Boolean).map((w) => {
+    const acc = /^\*.*\*$/.test(w);
+    return { t: acc ? w.slice(1, -1) : w, acc };
+  })).filter((ln) => ln.length);
+}
+function lineWidth(c, ln, size) {
+  c.font = SANS(size, WT); c.letterSpacing = `${TRACK * size}px`;
+  const sp = c.measureText(' ').width;
+  return ln.reduce((a, w, k) => a + (k ? sp : 0) + c.measureText(w.t).width, 0);
+}
+// balanced breaks of one run of words into n lines (by width), preferring a break after a comma
+function breakInto(c, words, n) {
+  if (n <= 1 || words.length < 2) return [words];
+  let best = null;
+  const rec = (start, left, acc) => {
+    if (left === 1) { const lines = [...acc, words.slice(start)]; const ws = lines.map((l) => lineWidth(c, l, 100)); const commas = lines.slice(0, -1).filter((l) => /,$/.test(l[l.length - 1].t)).length; const score = Math.max(...ws) - commas * 40; if (!best || score < best.score) best = { score, lines }; return; }
+    for (let i = start + 1; i <= words.length - left + 1 - 0; i++) { if (words.length - i < left - 1) break; rec(i, left - 1, [...acc, words.slice(start, i)]); }
+  };
+  rec(0, n, []);
+  return best.lines;
+}
+const layCache = new Map();
+// o: { max, top | cy, maxLines, availH, auto (rewrap even if the text has breaks) }
+function layout(c, text, o) {
+  const key = JSON.stringify([text, o]);
+  if (layCache.has(key)) return layCache.get(key);
+  let lines = parseLines(text);
+  const all = lines.flat();
+  if (o.auto || lines.length === 1 && o.maxLines > 1) {
+    let pick = null;
+    for (let n = 1; n <= Math.min(o.maxLines || 5, all.length); n++) {
+      const ls = breakInto(c, all, n);
+      const size = Math.min(o.max, ...ls.map((l) => 100 * MEASURE / lineWidth(c, l, 100)), o.availH ? o.availH / (LEAD * (n - 1) + 1.05) : 1e9);
+      if (!pick || size > pick.size * 1.15) pick = { size, ls }; // another line only when it buys real size
+    }
+    lines = pick.ls;
+  }
+  const size = Math.max(40, Math.min(o.max, ...lines.map((l) => 100 * MEASURE / lineWidth(c, l, 100))));
+  const n = lines.length;
+  const top = o.top ?? (o.cy - ((n - 1) * LEAD * size) / 2 - size * 0.36);
+  const out = [];
+  c.font = SANS(size, WT); c.letterSpacing = `${TRACK * size}px`;
+  const sp = c.measureText(' ').width;
+  lines.forEach((ln, i) => {
+    let x = MARGIN;
+    const base = top + CAP_R * size + i * LEAD * size;
+    ln.forEach((w, k) => { if (k) x += sp; const width = c.measureText(w.t).width; out.push({ t: w.t, acc: w.acc, x, base, width, line: i, size }); x += width; });
+  });
+  c.letterSpacing = '0px';
+  const L = { size, words: out, lines: n, top, bottom: top + CAP_R * size + (n - 1) * LEAD * size };
+  layCache.set(key, L);
+  return L;
+}
+function drawWord(c, text, x, base, size, wt, col, track = TRACK) {
+  c.font = SANS(size, wt); c.letterSpacing = `${track * size}px`; c.fillStyle = col; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+  c.fillText(text, x, base);
+  c.letterSpacing = '0px';
+}
+// a word rising into its own line, clipped to that line's slot, its weight filling in during the same move
+function riseWord(c, w, e, col) {
+  if (e <= 0) return;
+  const s = w.size;
+  c.save(); c.beginPath(); c.rect(0, w.base - s * 1.02, W, s * 1.36); c.clip();
+  drawWord(c, w.t, w.x, w.base + s * (1 - e), s, lerp(360, WT, e), col);
+  c.restore();
+}
+
+// ============================== ADAPT: the hook, the requests' fields and colours, the bands' heights ==============================
+const BAND_MAX = 120, BAND_R = 56;
+const HOOK = { text: 'Tell / *Ostlery* / the / trip.', ink: C.ink, acc: C.ember, max: 420 };
+// each request: its field, type, accent and send button colours; its band's height above the answer
+const REQ = [
+  { id: 'q1', bg: C.ember, ink: C.paper, acc: C.paper, btn: C.paper, arrow: C.ember, dark: C.rule, bh: 440, max: 400 },
+  { id: 'q2', bg: C.ink, ink: C.paper, acc: C.paper, btn: C.ember, arrow: '#FFFFFF', dark: C.ember2, bh: 330, max: 400 },
+  { id: 'q3', bg: C.ok, ink: C.paper, acc: C.paper, btn: C.paper, arrow: C.ok, dark: C.rule, bh: 330, max: 400 },
+  { id: 'q4', bg: C.sand, ink: C.ink, acc: C.ember, btn: C.ember, arrow: '#FFFFFF', dark: C.ember2, bh: 330, max: 330 },
+];
+const SEND_BIG = { x: W - MARGIN - 90, y: H - MARGIN - 90, r: 90 };
+const Q3_TEXT = 'Book it'; // the app's own button label, so it is not an editable field
+function reqText(values, i) { return i === 2 ? Q3_TEXT : String(values[REQ[i].id] ?? ''); }
+const bigLay = (c, values, i) => {
+  const o = { max: REQ[i].max, top: MARGIN + 70, maxLines: i === 2 ? 1 : 5, availH: SEND_BIG.y - SEND_BIG.r - 60 - (MARGIN + 70) };
+  if (i !== 2) return layout(c, reqText(values, i), o);
+  // Book it is the button grown to the frame: its label stays centred on its capitals, so it settles in the
+  // frame's centre (one line that fills the measure, its cap middle on H / 2)
+  const size = layout(c, Q3_TEXT, o).size;
+  return layout(c, Q3_TEXT, { ...o, top: H / 2 - CAP_R * size / 2 });
+};
+const bandLay = (c, values, i) => layout(c, reqText(values, i).replace(/\s+\/\s+/g, ' '), { max: BAND_MAX, cy: REQ[i].bh / 2 + 8, maxLines: 2, auto: true });
+const hookLay = (c) => layout(c, HOOK.text, { max: HOOK.max, top: MARGIN + 70 });
+const colOf = (st, w) => (w.acc ? st.acc : st.ink);
+
+// the band (a request folded up): its rounded foot at `edge`, its top beyond the frame
+function bandShape(c, edge, rad, colour, k) {
+  c.save(); shadow(c, k); rrect(c, 0, -120, W, edge + 120, rad); c.fillStyle = colour; c.fill(); c.restore();
+}
+function clipBand(c, edge, rad) { rrect(c, 0, -120, W, edge + 120, rad); c.clip(); }
+// ============================== KEEP: the fold's machinery ==============================
+// the band's lift (folds 1, 2, 4) and the hook's box start 22 % into their move
+const LAG = 0.22;
+// A FLIP: every word of a layout on ONE progress k (one curve, one start, no per-word or per-line stagger). Each word's
+// left baseline goes in a straight line from its place in one layout to its place in the other, and its size goes
+// linearly from one layout's size to the other's, so at every frame all words share one scale (words that share a
+// line in both layouts keep their spacing). Line breaks change only because each word travels to its new place.
+// k may be { x, y }: the across move (with the size) leads and the rise follows, so a word bound for the line above
+// slides clear of the words already there before it climbs, and no two words ever print over each other (founder
+// review, 2026-10-26); all words still share one scale on every frame.
+function flipWord(c, a, bb, k, col, wt = [WT, WT], track = [TRACK, TRACK]) {
+  const kx = typeof k === 'number' ? k : k.x, ky = typeof k === 'number' ? k : k.y;
+  drawWord(c, a.t, lerp(a.x, bb.x, kx), lerp(a.base, bb.base, ky), lerp(a.size, bb.size, kx), lerp(wt[0], wt[1], kx), col, lerp(track[0], track[1], kx));
+}
+// the fold's two progresses: across from the press over 70 % of the move; the rise waits 0.3 s, until the band has
+// come up close under the words, then lands with it (founder, 2026-10-26: ":08 … feels too disjointed")
+const foldK = (t, at, dur) => ({ x: EXPO_IO(r(t, at, dur * 0.7)), y: EXPO_IO(r(t, at + 0.3, 0.48)) });
+
+// ============================== the opening: the product's page, its composer, typing (KEEP the moves; ADAPT the captures) ==============================
+const COMP = { x: 20 * K, y: 312.52 * K, w: 350 * K, h: 262.5 * K, r: 28 * K };
+const COMP_C = { x: (W - 350 * K) / 2, y: (H - 262.5 * K) / 2 };
+const TXT = { x: 25, size: 18, base: (13 + 8) + 19.2 };
+const SEND = { x: 289 + 24, y: 201.5 + 24, r: 24 };
+function composerAt(t) {
+  const p = MOVE(r(t, T.iso + 0.04, 0.62));
+  return { x: lerp(COMP.x, COMP_C.x, p), y: lerp(COMP.y, COMP_C.y, p) };
+}
+function typedCount(t, at, text, per = T.perChar) { return Math.floor(clamp((t - at) / per, 0, text.length)); }
+function drawComposer(c, x, y, scale, name, n, sendLit, pr) {
+  const cap = n > 0 ? `${name}-${String(n).padStart(2, '0')}` : 'composer';
+  c.save(); rrect(c, x, y, 350 * scale, 262.5 * scale, 28 * scale); c.clip();
+  // an empty field shows no placeholder (the founder, 2026-10-26: too short to read in the close): the capture is drawn
+  // around the placeholder's area, which takes the card's white (so nothing shows through while the field fades in)
+  if (n === 0 && name === 'line') {
+    const hx = x + 14 * scale, hy = y + 8 * scale, hw = 300 * scale, hh = 72 * scale;
+    c.fillStyle = C.card; c.fillRect(hx, hy, hw, hh);
+    c.beginPath(); c.rect(x, y, 350 * scale, 262.5 * scale); c.rect(hx, hy, hw, hh); c.clip('evenodd');
+  }
+  c.drawImage(S[cap], x, y, 350 * scale, 262.5 * scale);
+  c.restore();
+  const sx = x + SEND.x * scale, sy = y + SEND.y * scale, sr = SEND.r * scale;
+  if ((sendLit > 0 && sendLit < 1) || pr) {
+    const base = sendLit < 1 ? mix(C.sand, C.ember, sendLit) : C.ember;
+    disc(c, sx, sy, sr + 1.5, C.card);
+    const k = pr ? pr.s : 1;
+    disc(c, sx, sy, sr * k, pr && pr.dark > 0 ? mix(base, C.ember2, pr.dark) : base);
+    icon(c, ICON_UP, sx, sy, 24 * scale * k, sendLit < 1 ? mix(C.soft, '#FFFFFF', sendLit) : '#FFFFFF', 1.6 * scale);
+  }
+}
+function caret(c, x, y, scale, text, n, t, typedEnd, until) {
+  if (t >= until) return;
+  const on = t < typedEnd + 0.1 || Math.floor((t - typedEnd - 0.1) / 0.5) % 2 === 1;
+  if (!on) return;
+  c.font = SANS(TXT.size * scale, 400);
+  const w = n ? c.measureText(text.slice(0, n)).width : 0;
+  c.fillStyle = C.ink;
+  c.fillRect(x + TXT.x * scale + w + 1.5 * scale, y + (13 + 8 + 2) * scale, 1.6 * scale, 23 * scale);
+}
+function sceneOpen(c, t) {
+  field(c, C.ink);
+  if (t < T.rise) return;
+  const rp = out5(r(t, T.rise, T.riseDur));
+  const y = H * (1 - rp);
+  const rad = 56 * (1 - DRAW(r(t, T.rise + T.riseDur * 0.5, T.riseDur * 0.5)));
+  c.save(); rrect(c, 0, y, W, H + 80, rad); c.clip();
+  field(c, C.paper);
+  const fade = 1 - DRAW(r(t, T.iso, T.isoDur * 0.8));
+  if (fade > 0) {
+    c.globalAlpha = fade; c.drawImage(S.home, 0, y, W, 844 * K); c.globalAlpha = 1;
+    if (t >= T.iso) { c.fillStyle = C.paper; rrect(c, COMP.x - 14, COMP.y - 10, COMP.w + 28, COMP.h + 34, 28 * K + 14); c.fill(); }
+  }
+  c.restore();
+  if (t < T.iso) return;
+  const pos = composerAt(t);
+  const n = typedCount(t, T.type, HOOK_TEXT);
+  drawComposer(c, pos.x, pos.y, K, 'ask', n, DRAW(r(t, T.type, 0.16)), null);
+  caret(c, pos.x, pos.y, K, HOOK_TEXT, n, t, T.type + HOOK_TEXT.length * T.perChar, T.expand);
+}
+
+// ============================== KEEP: the hook, the composer opens into the frame ==============================
+// the typed words' own places in the composer (Figtree 400 at the capture's 18 css px)
+function typedWords(c) {
+  const out = []; c.font = SANS(TXT.size * K, 400); c.letterSpacing = '0px';
+  let i = 0;
+  for (const w of HOOK_TEXT.split(' ')) {
+    const at = HOOK_TEXT.indexOf(w, i); i = at + w.length;
+    out.push({ t: w, x: COMP_C.x + TXT.x * K + c.measureText(HOOK_TEXT.slice(0, at)).width, base: COMP_C.y + TXT.base * K, size: TXT.size * K });
+  }
+  return out;
+}
+// the open box: from the composer's rect to the whole frame, white to linen, its hairline fading
+function hookBox(c, p) {
+  const x = lerp(COMP_C.x, -2, p), y = lerp(COMP_C.y, -2, p), w = lerp(COMP.w, W + 4, p), h = lerp(COMP.h, H + 4, p);
+  field(c, C.paper);
+  rrect(c, x, y, w, h, COMP.r * (1 - p)); c.fillStyle = mix(C.card, C.paper, p); c.fill();
+  if (p < 1) { c.save(); c.globalAlpha = 1 - clamp(p * 1.6); rrect(c, x + K / 2, y + K / 2, w - K, h - K, COMP.r * (1 - p) - K / 2); c.lineWidth = K; c.strokeStyle = C.line; c.stroke(); c.restore(); }
+}
+function hookButton(c, p, pr = { s: 1, dark: 0 }) {
+  const x = lerp(COMP_C.x + SEND.x * K, SEND_BIG.x, p), y = lerp(COMP_C.y + SEND.y * K, SEND_BIG.y, p);
+  const rad = lerp(SEND.r * K, SEND_BIG.r, p) * pr.s;
+  sendButton(c, x, y, rad, mix(C.ember, C.ember2, pr.dark), mix('#FFFFFF', C.paper, p), lerp(1.6 / 24, 0.11, p), lerp(1.0, 1.1, p));
+}
+function sceneHook(c, t) {
+  const big = hookLay(c), small = typedWords(c);
+  // the box and the four words on one curve: a straight FLIP from the typed line to the poster, so the words are
+  // always inside the box (both are linear in k)
+  const k = EXPO_IO(r(t, T.expand, T.expandDur * (1 - LAG)));
+  hookBox(c, k);
+  // one row becomes a column: each word drops to its line first and slides home after, so none crosses another; the
+  // size follows the slide, shared by all four
+  const d = T.expandDur * (1 - LAG), kk = { y: EXPO_IO(r(t, T.expand, d * 0.7)), x: EXPO_IO(r(t, T.expand + d * 0.3, d * 0.7)) };
+  big.words.forEach((w, j) => flipWord(c, small[j], w, kk, w.acc ? mix(C.ink, HOOK.acc, k) : C.ink, [400, WT], [0, TRACK]));
+  hookButton(c, EXPO_IO(r(t, T.expand + 0.04, T.expandDur)));
+}
+function drawHookFinal(c) {
+  field(c, C.paper);
+  for (const w of hookLay(c).words) drawWord(c, w.t, w.x, w.base, w.size, WT, colOf(HOOK, w));
+}
+
+// ============================== KEEP: request 1, the send button swells into its field ==============================
+function irisRadius(t) {
+  const p = r(t, T.iris, T.irisDur);
+  return logLerp(SEND_BIG.r, 2080, (1 - Math.cos(Math.PI * p)) / 2); // cosine in-out in log space: ≤1.3× a frame
+}
+// the request's words rising in turn into their lines (the first and second requests)
+function requestWords(c, values, i, t, start) {
+  const L = bigLay(c, values, i), st = REQ[i];
+  L.words.forEach((w, j) => riseWord(c, w, EXPO_OUT(r(t, start + j * 0.055, WORD)), colOf(st, w)));
+}
+// the request's own send button: grows in where the last one was, dips when pressed
+function requestButton(c, i, t, appear, extra = {}) {
+  const st = REQ[i], pr = press(t, T.press[i]);
+  const k = EXPO_OUT(r(t, appear, 0.5)) * pr.s * (extra.scale ?? 1);
+  sendButton(c, SEND_BIG.x, extra.y ?? SEND_BIG.y, SEND_BIG.r * k, mix(st.btn, st.dark, pr.dark), st.arrow);
+}
+const Q1_WORDS = () => T.iris + 0.2; // inside the swelling disc, so the ember opening pulls the words in (founder :06)
+let HOOK_COVER = 1900; // the disc radius that covers every hook glyph (set in prepare)
+function sceneQ1(c, t, values) {
+  const R = irisRadius(t);
+  if (R < 2000) {
+    if (R < HOOK_COVER) drawHookFinal(c); else field(c, C.paper);
+    c.save(); c.beginPath(); c.arc(SEND_BIG.x, SEND_BIG.y, R, 0, 2 * Math.PI); c.clip();
+    field(c, REQ[0].bg); requestWords(c, values, 0, t, Q1_WORDS());
+    c.restore();
+    // the arrow is the button's own: it fades as the button becomes the field
+    const a = 1 - DRAW(r(t, T.iris, T.irisDur * 0.45));
+    if (a > 0) { c.save(); c.globalAlpha = a; icon(c, ICON_UP, SEND_BIG.x, SEND_BIG.y, SEND_BIG.r * 1.1, C.paper, SEND_BIG.r * 0.11); c.restore(); }
+  } else { field(c, REQ[0].bg); requestWords(c, values, 0, t, Q1_WORDS()); }
+  requestButton(c, 0, t, T.iris + T.irisDur - 0.04);
+}
+
+// ============================== ADAPT: the answers, the product's real screens under the band ==============================
+// Each answer takes F (the fold's start): its parts rise into the space the band leaves, from below, staggered, on
+// EXPO_OUT (KEEP the timing and the curve; ADAPT what rises: the product's own answer, captured).
+const arrive = (t, at, dur = 0.72) => EXPO_OUT(r(t, at, dur));
+// answer 1: Ostlery's search card ("Checked 312 lake cabins · 6 fit") and the six stays that fit, three and three
+const A1 = { s: 2.7, y: 490 };
+function a1Grid() {
+  const cw = 358 * A1.s, ch = 162.5 * A1.s, gut = 18, top = A1.y + ch + 40;
+  const pw = (W - 2 * MARGIN - 2 * gut) / 3, ph = (H - top - MARGIN - gut) / 2;
+  return { cw, ch, pw, ph, slots: STAYS.map((n, i) => ({ n, x: MARGIN + (i % 3) * (pw + gut) + pw / 2, y: top + Math.floor(i / 3) * (ph + gut) + ph / 2 })) };
+}
+function answer1(c, t, F) {
+  const G = a1Grid();
+  // the photographs pull up from below the frame, one after another, left to right and row by row (founder :09)
+  G.slots.forEach((sl, i) => {
+    const k = EXPO_OUT(r(t, F + 0.30 + i * 0.06, 0.7));
+    if (k <= 0) return;
+    photo(c, sl.n, sl.x, lerp(H + G.ph, sl.y, k), G.pw, G.ph, 0, { shadowK: 0.35 });
+  });
+  const a = arrive(t, F + 0.24);
+  card(c, 'search', 0, 0, 358, 162.5, (W - G.cw) / 2, A1.y + 620 * (1 - a), A1.s, 16 * A1.s);
+}
+// answer 2: Heron Point (Best fit), the reply, the question and its two actions: one response
+const A2 = { s: 2.62, w: 390, h: 457 };
+const A2_ROWS = [[0, 292], [292, 325.4], [325.4, 352], [352, 386], [386, 457]];
+const A2_PILL = { x: 16, y: 397, w: 88, h: 44 };   // the "Book it" .pill.dark in the capture (css px, measured)
+function a2Box() { const s = A2.s, pw = A2.w * s, ph = A2.h * s, bh = REQ[1].bh; return { s, pw, ph, x: (W - pw) / 2, y: bh + (H - bh - ph) / 2 + 10 }; }
+function pillRect() { const B = a2Box(), s = B.s; return { x: B.x + A2_PILL.x * s, y: B.y + A2_PILL.y * s, w: A2_PILL.w * s, h: A2_PILL.h * s, rad: A2_PILL.h * s / 2 }; }
+function answer2(c, t, F, o = {}) {
+  const B = a2Box(), s = B.s, a = arrive(t, F + 0.24, 0.76);
+  const y = B.y + 760 * (1 - a);
+  c.save(); shadow(c, 1); rrect(c, B.x, y, B.pw, B.ph, 20 * s); c.fillStyle = C.paper; c.fill(); c.restore();
+  c.save(); rrect(c, B.x, y, B.pw, B.ph, 20 * s); c.clip();
+  // the carousel slides in from the right inside the panel; the reply and its actions rise with it
+  const ca = arrive(t, F + 0.30, 0.8);
+  shot(c, 'a2', 0, 0, 390, 292, B.x + 520 * (1 - ca), y, s);
+  A2_ROWS.slice(1).forEach(([y0, y1], k) => {
+    const e = arrive(t, F + 0.36 + k * 0.045, 0.7);
+    if (e <= 0) return;
+    c.globalAlpha = clamp(e * 1.8);
+    shot(c, 'a2', 0, y0, 390, y1 - y0, B.x, y + y0 * s + 46 * (1 - e), s);
+  });
+  c.globalAlpha = 1;
+  if (o.pill) {
+    // the real pill, redrawn the app's way over its capture so it can be pressed and opened
+    const P = pillRect(); const py = P.y + (y - B.y);
+    c.fillStyle = '#F8F4EE'; c.fillRect(P.x - 2, py - 2, P.w + 4, P.h + 4);
+    o.pill(c, P.x, py);
+  }
+  c.restore();
+}
+// the app's .pill.dark "Book it" (its label, 15 css px, 600, white, centred on its capitals, is drawn by the caller)
+function drawPill(c, x, y, w, h, fill) {
+  rrect(c, x, y, w, h, h / 2); c.fillStyle = fill; c.fill();
+}
+// answer 3: the cabin, then the booking card: Booking (a spinner) → Booked, then Done and the trip card
+const A3 = { s: 2.62, w: 390, h: 225.6, photo: { y: 390, h: 700 }, y: 1140 };
+const PILL = { x: 16, y: 16, h: 44, pad: 20, gap: 8, booked: 119.19, allX: 143.19, allW: 111.08 };
+function bookPill(c, t, x, y, s) {
+  const m = MOVE(r(t, T.booked, 0.34));
+  c.font = SANS(15 * s, 600); c.letterSpacing = '0px';
+  const twBooking = c.measureText('Booking').width / s;
+  const wBooking = PILL.pad + 14 + PILL.gap + twBooking + PILL.pad;
+  const w = lerp(wBooking, PILL.booked, m);
+  const px = x + PILL.x * s, py = y + PILL.y * s, ph = PILL.h * s, cy = py + ph / 2;
+  rrect(c, px, py, w * s, ph, ph / 2); c.fillStyle = mix(C.ink, C.ok, m); c.fill();
+  c.fillStyle = '#FFFFFF'; c.textAlign = 'left';
+  const outP = EXPO_IN(r(t, T.booked, 0.16)), inP = EXPO_OUT(r(t, T.booked + 0.1, 0.4));
+  c.save(); rrect(c, px, py, w * s, ph, ph / 2); c.clip();
+  if (outP < 1) {
+    c.save(); c.globalAlpha = 1 - outP * 0.5; c.translate(0, -ph * 0.8 * outP);
+    const sx = px + PILL.pad * s + 7 * s, ang = t * 2 * Math.PI / 0.8;
+    c.beginPath(); c.arc(sx, cy, 6 * s, ang, ang + Math.PI * 1.5); c.strokeStyle = '#FFFFFF'; c.lineWidth = 2 * s; c.lineCap = 'butt'; c.stroke();
+    kit.centreText(c, 'Booking', px + (PILL.pad + 14 + PILL.gap) * s, cy);
+    c.restore();
+  }
+  if (inP > 0) {
+    c.save(); c.translate(0, ph * 0.8 * (1 - inP));
+    icon(c, ICON_CHECK, px + (PILL.pad + 10) * s, cy, 20 * s, '#FFFFFF', 1.6 * s);
+    kit.centreText(c, 'Booked', px + (PILL.pad + 20 + PILL.gap) * s, cy);
+    c.restore();
+  }
+  c.restore();
+  return { w };
+}
+function answer3(c, t) {
+  // while it books, the cabin fills the frame; as Done arrives the card grows and the photo makes room (one reflow)
+  const grow = MOVE(r(t, T.done - 0.12, 0.44));
+  // the cabin and the booking card are in place under the green field before its band lifts: each rises 40 px from
+  // 16.9 s, three frames apart, so the band uncovers the answer, never empty paper
+  const A0 = T.press[2] + BOOK_DIP;
+  const P = A3.photo, pa = EXPO_OUT(r(t, A0, 0.45)), phh = lerp(P.h + 260, P.h, grow);
+  photo(c, 'heron-point', W / 2, P.y + phh / 2 + 40 * (1 - pa), W - 2 * MARGIN, phh, 0, { radius: 32, shadowK: 0.4, focus: [0.3, 0.42] });
+  const s = A3.s, pw = A3.w * s, x = (W - pw) / 2, a = EXPO_OUT(r(t, A0 + 3 / FPS, 0.45));
+  const y = lerp(A3.y + 260, A3.y, grow) + 40 * (1 - a);
+  const ph = lerp(76, A3.h, grow) * s;
+  c.save(); shadow(c, 1); rrect(c, x, y, pw, ph, 20 * s); c.fillStyle = C.paper; c.fill(); c.restore();
+  c.save(); rrect(c, x, y, pw, ph, 20 * s); c.clip();
+  if (t >= T.booked + 0.45) shot(c, 'a3', 0, 0, 390, 70, x, y, s); // the app's own Booked state
+  else {
+    const { w } = bookPill(c, t, x, y, s);
+    shot(c, 'a3', PILL.allX - 1, PILL.y - 1, PILL.allW + 2, PILL.h + 2, x + (PILL.x + w + PILL.gap - 1) * s, y + (PILL.y - 1) * s, s);
+  }
+  [[70, 127, 0], [127, 225.6, 1]].forEach(([y0, y1, k]) => {
+    const e = out5(r(t, T.done + 0.06 + k * 0.08, 0.42));
+    if (e <= 0) return;
+    c.globalAlpha = clamp(e * 1.6);
+    shot(c, 'a3', 0, y0, 390, y1 - y0, x, y + y0 * s + 34 * (1 - e), s);
+  });
+  c.globalAlpha = 1; c.restore();
+}
+// answer 4: the cabin's living room turns in from edge-on, and the trip page's Getting in rows rise
+const A4 = { photo: { y: 390, h: 860 }, s: 2.62, y: 1300 };
+function answer4(c, t, F) {
+  const P = A4.photo, pw = W - 2 * MARGIN, px = MARGIN;
+  // the turn is eased in its angle, so it settles flat at rest (easing the projected width made the angle spin fastest
+  // just as it landed: the founder, 2026-10-26, ":23 … could be smoother")
+  const q = r(t, F + 0.26, 0.82), turnA = (Math.PI / 2) * 0.985 * (1 - EXPO_OUT(q)), e = q <= 0 ? 0 : q >= 1 ? 1 : Math.cos(turnA);
+  const lift = arrive(t, F + 0.22, 0.86), py = P.y + 300 * (1 - lift);
+  if (e > 0 && e < 1) {
+    const ang = turnA;
+    shadowOnly(c, W / 2 - pw * e / 2, py, pw * e, P.h, 32, 0.4 * e * e);
+    turnY(c, intoBuf((cb) => photo(cb, 'heron-inside', W / 2, py + P.h / 2, pw, P.h, 0, { radius: 32 }), 0.25 * (1 - e)), { x: px, y: py, w: pw, h: P.h }, W / 2, py + P.h / 2, ang);
+  } else if (e >= 1) photo(c, 'heron-inside', W / 2, py + P.h / 2, pw, P.h, 0, { radius: 32, shadowK: 0.4 });
+  const s = A4.s, cw = 390 * s, a = arrive(t, F + 0.36, 0.76);
+  card(c, 'trip-info', 0, 303, 390, 150, (W - cw) / 2, A4.y + 560 * (1 - a), s, 20 * s);
+}
+const ANSWERS = [answer1, answer2, answer3, answer4];
+
+// ============================== KEEP: the fold, a sent request becomes its answer's headline ==============================
+function sceneFold(c, i, t, values) {
+  const F = T.fold[i], st = REQ[i];
+  field(c, C.paper);
+  const big = bigLay(c, values, i), band = bandLay(c, values, i);
+  // the words: one FLIP, every word on the same curve from the same start (expoInOut over .55 s)
+  const kk = foldK(t, T.flip[i], FLIP), k = kk.y;
+  let ky = EXPO_IO(r(t, F + FOLD * LAG, FOLD * (1 - LAG)));
+  if (i === 2) {
+    // Book it's band is settled at the top by 17.2 s: it lifts on its own .38 s curve from the press, its foot never
+    // above the travelling words (it rides just under them through their fast middle), then sits at the band's foot
+    const low = Math.max(...big.words.map((w, j) => lerp(w.base, band.words[j].base, k) + 0.12 * lerp(w.size, band.words[j].size, k))) + 30;
+    const edgeK = Math.max(st.bh, lerp(H + 2, st.bh, EXPO_IO(r(t, T.flip[2], 0.38))), Math.min(H + 2, low));
+    ky = clamp((H + 2 - edgeK) / (H + 2 - st.bh));
+  }
+  ANSWERS[i](c, t, F + 0.12);
+  const edge = lerp(H + 2, st.bh, ky), rad = BAND_R * clamp(ky * 1.4);
+  bandShape(c, edge, rad, st.bg, 0.6 * ky);
+  c.save(); clipBand(c, edge, rad);
+  big.words.forEach((w, j) => flipWord(c, w, band.words[j], kk, colOf(st, w)));
+  // the send button rides the band's foot as it leaves, and is gone before the band lands
+  const kb = 1 - DRAW(clamp(ky / 0.42));
+  if (kb > 0) requestButton(c, i, t, -10, { scale: kb, y: edge - (H - SEND_BIG.y) });
+  c.restore();
+}
+
+// ============================== KEEP: the reopen, a new band comes down over the answer as the next request ==============================
+// The next request arrives as the band did, from the top, its rounded foot leading (an entrance from off frame: it
+// arrives at speed and settles on a long tail); the answer under it falls back and darkens.
+function sceneReopen(c, i, t, values) {
+  const S0 = T.reopen[i], prev = REQ[i - 1], st = REQ[i], p = EXPO_OUT(r(t, S0, REOPEN));
+  field(c, C.paper);
+  c.save(); c.translate(W / 2, H * 0.62); c.scale(1 - 0.06 * p, 1 - 0.06 * p); c.translate(-W / 2, -H * 0.62 + 60 * p);
+  const edge0 = lerp(-40, H + 2, p);
+  if (edge0 < H) ANSWERS[i - 1](c, S0 + 10, T.fold[i - 1]);
+  bandShape(c, prev.bh, BAND_R, prev.bg, 0.6);
+  if (edge0 < prev.bh + 40) for (const w of bandLay(c, values, i - 1).words) drawWord(c, w.t, w.x, w.base, w.size, WT, colOf(prev, w));
+  c.restore();
+  if (p > 0) { c.fillStyle = `rgba(23,25,31,${(0.24 * p).toFixed(3)})`; c.fillRect(0, 0, W, H); }
+  const edge = lerp(-40, H + 2, p), rad = BAND_R * (1 - clamp((p - 0.6) / 0.4));
+  if (p <= 0) return;
+  bandShape(c, edge, rad, st.bg, 0.8 * (1 - clamp((p - 0.7) / 0.3)));
+  c.save(); clipBand(c, edge, rad);
+  const L = bigLay(c, values, i), start = S0 + 0.16;
+  if (i === 3) {
+    // the last request's lines enter from opposing sides, their weight filling in during the same move (EXPO_OUT:
+    // every line inside the frame within 4 frames; the inspiring film's own curve lingered half off frame)
+    L.words.forEach((w) => {
+      const e = EXPO_OUT(r(t, start + w.line * 0.04, 0.6));
+      if (e <= 0) return;
+      drawWord(c, w.t, w.x + (w.line % 2 ? 0.75 : -0.32) * W * (1 - e), w.base, w.size, lerp(380, WT, clamp(e)), colOf(st, w));
+    });
+  } else L.words.forEach((w, j) => riseWord(c, w, EXPO_OUT(r(t, start + j * 0.06, WORD)), colOf(st, w)));
+  c.restore();
+  requestButton(c, i, t, S0 + REOPEN - 0.1);
+}
+
+// ============================== KEEP the move, ADAPT the button: Book it, the answer's own button opens into the third request ==============================
+// the pill's dip on the beat: it sinks to .9 and lights over BOOK_DIP, and grows from there
+function bookDip(t) { const d = out3(r(t, T.book, BOOK_DIP)); return { s: lerp(1, 0.9, d), dark: d }; }
+function sceneBook(c, t, values) {
+  const pr = bookDip(t), p = EXPO_IO(r(t, T.bookOpen, BOOK_GROW)), open = t >= T.bookOpen;
+  const P = pillRect(), st = REQ[2], s0 = 0.9;
+  field(c, C.paper);
+  // nothing under the button moves: the answer and its question hold until the growing button covers them
+  answer2(c, T.fold[1] + 10, T.fold[1], { pill: (cc, x, y) => {
+    if (open) return; // from here the pill is drawn growing, above everything
+    const w = P.w * pr.s, h = P.h * pr.s;
+    drawPill(cc, x + (P.w - w) / 2, y + (P.h - h) / 2, w, h, mix(C.ink, '#3A3E48', pr.dark));
+    cc.save(); cc.translate(x + P.w / 2, y + P.h / 2); cc.scale(pr.s, pr.s); cc.translate(-(x + P.w / 2), -(y + P.h / 2));
+    cc.font = SANS(15 * A2.s, 600); cc.fillStyle = '#FFFFFF'; cc.textAlign = 'center'; kit.centreText(cc, 'Book it', x + P.w / 2, y + P.h / 2); cc.textAlign = 'left'; cc.restore();
+  } });
+  bandShape(c, REQ[1].bh, BAND_R, REQ[1].bg, 0.6);
+  for (const w of bandLay(c, values, 1).words) drawWord(c, w.t, w.x, w.base, w.size, WT, colOf(REQ[1], w));
+  if (!open) return;
+  c.fillStyle = `rgba(23,25,31,${(0.22 * p).toFixed(3)})`; c.fillRect(0, 0, W, H);
+  // one shape, one move: the dipped button's own rect grows to the whole frame (expoInOut, .5 s), green from its first
+  // frame, keeping the button's radius until it is past 90 % of the frame
+  const bx = P.x + P.w * (1 - s0) / 2, by = P.y + P.h * (1 - s0) / 2, bw = P.w * s0, bh = P.h * s0;
+  const x = lerp(bx, -2, p), y = lerp(by, -2, p), w = lerp(bw, W + 4, p), h = lerp(bh, H + 4, p);
+  const q = Math.min(w / (W + 4), h / (H + 4));
+  const rad = (bh / 2) * (1 - DRAW(clamp((q - 0.9) / 0.1)));
+  rrect(c, x, y, w, h, rad); c.fillStyle = st.bg; c.fill();
+  // its label, centred on its capitals in the growing rect, scales with it to the request's size (the same two words)
+  c.save(); rrect(c, x, y, w, h, rad); c.clip();
+  const ls = 15 * A2.s * s0, pcx = P.x + P.w / 2, pcy = P.y + P.h / 2;
+  c.font = SANS(ls, 600); c.letterSpacing = '0px';
+  const lw = c.measureText('Book it').width, sp = c.measureText('Book ').width, base = kit.capMiddle(c, pcy);
+  const from = [{ x: pcx - lw / 2, size: ls }, { x: pcx - lw / 2 + sp, size: ls }];
+  bigLay(c, values, 2).words.forEach((wd, j) => {
+    const f = from[j] || from[0];
+    flipWord(c, { t: wd.t, x: f.x, base, size: f.size }, wd, p, mix('#FFFFFF', st.ink, p), [600, WT], [0, TRACK]);
+  });
+  c.restore();
+  requestButton(c, 2, t, T.bookOpen + BOOK_GROW - 0.06);
+}
+
+// ============================== KEEP: the end, the band closes into the composer; the line; the mark ==============================
+function sceneToComposer(c, t, values) {
+  const S0 = T.toComp, p = EXPO_IO(r(t, S0, T.toCompDur)), st = REQ[3];
+  field(c, C.paper);
+  // the answer falls away below as its question closes into the input
+  const fall = EXPO_IN(r(t, S0, T.toCompDur * 0.8));
+  c.save(); c.translate(W / 2, H * 0.6 + 1500 * fall); c.scale(1 - 0.12 * p, 1 - 0.12 * p); c.translate(-W / 2, -H * 0.6);
+  answer4(c, S0 + 10, T.fold[3]); c.restore();
+  const x = lerp(0, COMP_C.x, p), y = lerp(-120, COMP_C.y, p), w = lerp(W, COMP.w, p), h = lerp(st.bh + 120, COMP.h, p);
+  const rad = lerp(BAND_R, COMP.r, p);
+  c.save(); shadow(c, 0.6 * (1 - p)); rrect(c, x, y, w, h, rad); c.fillStyle = mix(st.bg, C.card, DRAW(clamp(p / 0.6))); c.fill(); c.restore();
+  if (p > 0.4) { c.save(); c.globalAlpha = clamp((p - 0.4) / 0.6); rrect(c, x + K / 2, y + K / 2, w - K, h - K, rad - K / 2); c.lineWidth = K; c.strokeStyle = C.line; c.stroke(); c.restore(); }
+  // the question leaves with the closing band; the composer's own face arrives as it lands
+  // the question rides up out of the closing band, the way the old headline leaves when a new request comes
+  const q = DRAW(clamp((p - 0.06) / 0.36)), sc = w / W;
+  if (q < 1) {
+    c.save(); rrect(c, x, y, w, h, rad); c.clip(); c.globalAlpha = 1 - q;
+    for (const wd of bandLay(c, values, 3).words) drawWord(c, wd.t, x + wd.x * sc, y + (wd.base + 120) * sc - 30 * q, wd.size * sc, WT, colOf(st, wd));
+    c.restore();
+  }
+  // the composer's own face arrives as the question leaves, inside the one closing shape: its idle send button pinned
+  // to the shape's corner and no placeholder (the founder, 2026-10-26: too short to read here); the whole capture
+  // takes over only once the shape has its final proportions (no second edge)
+  const f = DRAW(clamp((p - 0.3) / 0.45)), s2 = w / 350;
+  if (f > 0) {
+    c.save(); rrect(c, x + K, y + K, w - 2 * K, h - 2 * K, rad - K); c.clip(); c.globalAlpha = f;
+    disc(c, x + w - (350 - SEND.x) * s2, y + h - (262.5 - SEND.y) * s2, SEND.r * s2, C.sand);
+    icon(c, ICON_UP, x + w - (350 - SEND.x) * s2, y + h - (262.5 - SEND.y) * s2, 24 * s2, C.soft, 1.6 * s2);
+    c.restore();
+  }
+  const whole = DRAW(clamp((p - 0.88) / 0.12));
+  if (whole > 0) { c.save(); c.globalAlpha = whole; drawComposer(c, x, y, s2, 'line', typedCount(t, T.endType, LINE_TEXT, T.endPerChar), DRAW(r(t, T.endType, 0.16)), null); c.restore(); }
+}
+// KEEP: the approved lockup's proportions (the wordmark 124:98.6 of the mark's drawn height, the gap 26:98.6, the
+// baseline on the mark's foot, the mark a touch above the middle); ADAPT the wordmark's word, face and tracking
+const LOCK = { mark: 160, foot: 0 };
+const BOX = { x0: 8, y0: 8, x1: 92, y1: 92 };
+const KT = 108 * 84 / 92;
+let MW = null, WORD_IN = 0.12;
+function endLock() {
+  const h = LOCK.mark, u = h / (BOX.y1 - BOX.y0), mw = h * (BOX.x1 - BOX.x0) / (BOX.y1 - BOX.y0), gap = h * 26 / KT, total = mw + gap + MW.ww;
+  const left = W / 2 - total / 2, top = H / 2 - 0.58 * h;
+  const ox = left - BOX.x0 * u, oy = top - BOX.y0 * u;
+  return { ox, oy, u, wordX: left + mw + gap, base: top + h - LOCK.foot * u, x: ox, y: oy, box: 100 * u };
+}
+function drawMark(c, x, y, box) { c.save(); c.translate(x, y); c.scale(box / 100, box / 100); c.fillStyle = C.ember; for (const p of MARK) c.fill(p, 'evenodd'); c.restore(); }
+function sceneEnd(c, t) {
+  field(c, C.paper);
+  const turn0 = T.endTurn, turn1 = turn0 + T.turnOut;
+  if (t < turn1) {
+    const x = COMP_C.x, y = COMP_C.y;
+    const n = typedCount(t, T.endType, LINE_TEXT, T.endPerChar);
+    const draw = (cc) => {
+      drawComposer(cc, x, y, K, 'line', n, DRAW(r(t, T.endType, 0.16)), t >= T.endPress ? press(t, T.endPress) : null);
+      caret(cc, x, y, K, LINE_TEXT, n, t, T.endType + LINE_TEXT.length * T.endPerChar, T.endPress);
+    };
+    if (t < turn0) { draw(c); return; }
+    const p = easeIn(r(t, turn0, T.turnOut));
+    turnY(c, intoBuf((cb) => draw(cb), 0.12 * p), { x, y, w: COMP.w, h: COMP.h }, W / 2, H / 2, lerp(0, Math.PI * 0.5, p));
+    return;
+  }
+  const L = endLock(), big = 300, p = MOVE(r(t, turn1, 0.84));
+  const box = Math.exp(lerp(Math.log(big), Math.log(L.box), p));
+  const mx = lerp(W / 2 - big / 2, L.x, p), my = lerp(H / 2 - big / 2, L.y, p);
+  const tp = clamp(p * 1.5);
+  if (tp < 1) turnY(c, intoBuf((cb) => drawMark(cb, mx, my, box)), { x: mx, y: my, w: box, h: box }, mx + box / 2, my + box / 2, -Math.acos(clamp(tp, 0.015, 1)));
+  else drawMark(c, mx, my, box);
+  if (p > 0) {
+    c.save(); c.globalAlpha = clamp((p - WORD_IN) / Math.min(0.55, 1 - WORD_IN)); c.font = SERIF(MW.size * (0.7 + 0.3 * p), 600); c.letterSpacing = `${-0.0174 * MW.size * (0.7 + 0.3 * p)}px`; c.fillStyle = C.ink; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+    const gap = L.wordX - (L.ox + 92 * L.u); c.fillText('ostlery', mx + 0.92 * box + gap, L.base); c.restore();
+  }
+}
+
+// ============================== KEEP: seek ==============================
+function seek(t, values = defaults()) {
+  g.reset(); t = clamp(t, 0, DURATION - 1e-6);
+  values = { ...defaults(), ...values };
+  if (t < T.expand) sceneOpen(g, t);
+  else if (t < T.iris) sceneHook(g, t);
+  else if (t < T.fold[0]) sceneQ1(g, t, values);
+  else if (t < T.reopen[1]) sceneFold(g, 0, t, values);
+  else if (t < T.fold[1]) sceneReopen(g, 1, t, values);
+  else if (t < T.book) sceneFold(g, 1, t, values);
+  else if (t < T.flip[2]) sceneBook(g, t, values);
+  else if (t < T.reopen[3]) sceneFold(g, 2, t, values);
+  else if (t < T.fold[3]) sceneReopen(g, 3, t, values);
+  else if (t < T.toComp) sceneFold(g, 3, t, values);
+  else if (t < T.toComp + T.toCompDur) sceneToComposer(g, t, values);
+  else sceneEnd(g, t);
+  g.letterSpacing = '0px';
+  return canvas;
+}
+
+async function prepare(values = {}) {
+  await loadFont('Figtree', 'assets/fonts/figtree-variable.ttf', { weight: '300 900' });
+  await loadFont('Newsreader', 'assets/fonts/newsreader-variable.ttf', { weight: '200 800' });
+  await document.fonts.ready;
+  if (!SCR) SCR = await (await fetch('assets/screens/screens.json')).json();
+  const names = ['home', 'composer', 'search', 'a2', 'a3', 'trip-info'];
+  for (let i = 1; i <= HOOK_TEXT.length; i++) names.push(`ask-${String(i).padStart(2, '0')}`);
+  for (let i = 1; i <= LINE_TEXT.length; i++) names.push(`line-${String(i).padStart(2, '0')}`);
+  await Promise.all(names.filter((n) => !S[n]).map(async (n) => { S[n] = await loadImage(`assets/screens/${SCR.captures[n].file}`); }));
+  await Promise.all([...STAYS, 'heron-inside'].filter((n) => !S[n]).map(async (n) => { S[n] = await loadImage(`assets/stays/${n}.jpg`); }));
+  g.reset();
+  g.font = SANS(100, 800); CAP_R = g.measureText('H').actualBoundingBoxAscent / 100;
+  const size = LOCK.mark * 124 / KT;
+  g.font = SERIF(size, 600); g.letterSpacing = `${-0.0174 * size}px`; // the device film's setting (-3 px at 172 px)
+  MW = { size, ww: g.measureText('ostlery').width }; g.letterSpacing = '0px';
+  // the first progress at which the travelling word's right edge is inside the frame (padded): it fades in from there
+  {
+    g.font = SANS(100, 800); const capH = g.measureText('H').actualBoundingBoxAscent / 100;
+    HOOK_COVER = Math.max(...hookLay(g).words.flatMap((w) => [[w.x, w.base - capH * w.size * 1.1], [w.x + w.width, w.base - capH * w.size * 1.1], [w.x, w.base + 0.3 * w.size], [w.x + w.width, w.base + 0.3 * w.size]]).map(([x, y]) => Math.hypot(x - SEND_BIG.x, y - SEND_BIG.y))) + 4;
+  }
+  for (let q = 0.12; q < 1; q += 0.005) {
+    const L = endLock(), box = Math.exp(lerp(Math.log(300), Math.log(L.box), q)), mx = lerp(W / 2 - 150, L.x, q);
+    const right = mx + 0.92 * box + (L.wordX - (L.ox + 92 * L.u)) + MW.ww * (0.7 + 0.3 * q);
+    if (right < W - 48) { WORD_IN = q; break; }
+  }
+  g.reset();
+  layCache.clear();
+}
+const defaults = () => ({ size: '9:16', q1: 'A weekend / lake cabin, / with our / dog, on a / budget', q2: "Which / one's / best?", q4: 'How do / we get / *in?*' });
+
+// ============================== sound: ticks on keys, taps on presses, soft swishes on the big moves ==============================
+function cues() {
+  const out = [];
+  for (let i = 0; i < HOOK_TEXT.length; i++) out.push({ t: T.type + i * T.perChar, type: 'tick', gain: 0.32 });
+  for (let i = 0; i < LINE_TEXT.length; i++) out.push({ t: T.endType + i * T.endPerChar, type: 'tick', gain: 0.32 });
+  const swish = (t, travel, gain = 0.26) => out.push({ t, type: 'swish', gain, motion: { kind: 'container', travel } });
+  // EXPO_IO moves show their first visible travel ~.2 s in: the sound starts there
+  swish(T.expand + 0.2, 0.8, 0.24);
+  swish(T.iris + 0.1, 1.0, 0.26);
+  T.press.forEach((p) => out.push({ t: p, type: 'tap', gain: 0.55 }));
+  T.flip.forEach((f) => swish(f + 0.18, 0.8, 0.26)); // the words' FLIP shows its first travel ~.18 s in
+  [1, 3].forEach((i) => swish(T.reopen[i] + 0.22, 0.8, 0.24));
+  out.push({ t: T.book, type: 'tap', gain: 0.55 });
+  swish(T.bookOpen + 0.16, 1.0, 0.26);
+  out.push({ t: T.booked, type: 'pop', gain: 0.36 });
+  swish(T.toComp + 0.2, 0.6, 0.22);
+  out.push({ t: T.endPress, type: 'tap', gain: 0.6 });
+  swish(T.glide, 0.3, 0.2);
+  return out.sort((x, y) => x.t - y.t);
+}
+
+function selfChecks(values = defaults()) {
+  values = { ...defaults(), ...values };
+  const L = endLock(), ratio = MW.size / LOCK.mark, gap = L.wordX - (L.ox + BOX.x1 * L.u);
+  const checks = [
+    { name: 'approved lockup: 124:98.6 type, 26:98.6 gap, baseline on mark foot', ok: Math.abs(ratio - 124 / KT) < 1e-8 && Math.abs(gap / LOCK.mark - 26 / KT) < 1e-8 && Math.abs(L.base - (L.oy + 92 * L.u)) < 1e-6 },
+    { name: 'lockup padded inside the tall frame', ok: L.ox + 8 * L.u > 70 && L.wordX + MW.ww < W - 70 },
+  ];
+  for (let i = 0; i < 4; i++) {
+    const big = bigLay(g, values, i), band = bandLay(g, values, i);
+    const pad = (Lx) => Lx.words.every((w) => w.x >= MARGIN - 1 && w.x + w.width <= W - MARGIN + 2);
+    checks.push({ name: `request ${i + 1}: settled words inside the margins, above the send button`, ok: pad(big) && big.bottom + big.size * 0.25 < SEND_BIG.y - SEND_BIG.r, detail: `${big.size.toFixed(1)}px, ${big.lines} lines` });
+    checks.push({ name: `request ${i + 1}: headline fits its band`, ok: pad(band) && band.bottom + band.size * 0.25 < REQ[i].bh - 20 && band.words.length === big.words.length, detail: `${band.size.toFixed(1)}px, ${band.lines} lines` });
+  }
+  // every frame of every fold and of the Book it opening: no word crosses the frame's edge
+  let worst = 0, where = '';
+  const ctx = gb;
+  const edgeOf = (x, size, text, wt) => { ctx.font = SANS(size, wt); ctx.letterSpacing = `${TRACK * size}px`; const w = ctx.measureText(text).width; ctx.letterSpacing = '0px'; return [x, x + w]; };
+  for (let i = 0; i < 4; i++) {
+    const big = bigLay(ctx, values, i), band = bandLay(ctx, values, i);
+    for (let f = 0; f <= 30; f++) {
+      const k = EXPO_IO(f / 30 / FLIP);
+      big.words.forEach((a, j) => {
+        const bb = band.words[j], size = lerp(a.size, bb.size, k), x = lerp(a.x, bb.x, k);
+        const [l, rr] = edgeOf(x, size, a.t, WT); const over = Math.max(0, rr - W, -l);
+        if (over > worst) { worst = over; where = `fold ${i + 1} +${f}f "${a.t}"`; }
+      });
+    }
+  }
+  checks.push({ name: 'folds: every word inside the frame on every frame', ok: worst < 1, detail: worst ? `${worst.toFixed(1)}px at ${where}` : 'all inside' });
+  // a word's ink box at a pose (its own glyph bounds, scaled from 100 px)
+  const inkBox = (t, x, base, size, wt = WT) => {
+    ctx.font = SANS(100, wt); ctx.letterSpacing = `${TRACK * 100}px`; const m = ctx.measureText(t); ctx.letterSpacing = '0px';
+    const k = size / 100; return { l: x - m.actualBoundingBoxLeft * k, r: x + m.actualBoundingBoxRight * k, t: base - m.actualBoundingBoxAscent * k, b: base + m.actualBoundingBoxDescent * k };
+  };
+  const meet = (a, bb) => Math.min(a.r, bb.r) - Math.max(a.l, bb.l) > 1 && Math.min(a.b, bb.b) - Math.max(a.t, bb.t) > 1;
+  // the founder's fold rule (2026-10-26): no word passes through another, in the fold of every request, in the hook's
+  // row-to-column move and in Book it's opening (every frame, the words at their poses on that frame)
+  let hit = '';
+  const sweep = (name, from, to, poses) => {
+    for (let f = 0; f <= Math.ceil((to - from) * FPS) && !hit; f++) {
+      const tt = from + f / FPS, boxes = poses(tt);
+      for (let a = 0; a < boxes.length && !hit; a++) for (let bb = a + 1; bb < boxes.length; bb++) if (meet(boxes[a].box, boxes[bb].box)) { hit = `${name} at ${tt.toFixed(2)} s: "${boxes[a].t}" over "${boxes[bb].t}"`; break; }
+    }
+  };
+  const posed = (a, bb, kx, ky, wt) => ({ t: a.t, box: inkBox(a.t, lerp(a.x, bb.x, kx), lerp(a.base, bb.base, ky), lerp(a.size, bb.size, kx), wt) });
+  for (let i = 0; i < 4; i++) {
+    const big = bigLay(ctx, values, i), band = bandLay(ctx, values, i);
+    sweep(`fold ${i + 1}`, T.flip[i], T.flip[i] + 0.8, (tt) => { const k = foldK(tt, T.flip[i], FLIP); return big.words.map((w, j) => posed(w, band.words[j], k.x, k.y)); });
+  }
+  {
+    const big = hookLay(ctx), small = typedWords(ctx), d = T.expandDur * (1 - LAG);
+    sweep('hook', T.expand, T.expand + T.expandDur, (tt) => { const ky = EXPO_IO(r(tt, T.expand, d * 0.7)), kx = EXPO_IO(r(tt, T.expand + d * 0.3, d * 0.7)); return big.words.map((w, j) => posed(small[j], w, kx, ky, lerp(400, WT, kx))); });
+  }
+  {
+    const P = pillRect(), ls = 15 * A2.s * 0.9, pcx = P.x + P.w / 2, pcy = P.y + P.h / 2;
+    ctx.font = SANS(ls, 600); ctx.letterSpacing = '0px';
+    const lw = ctx.measureText('Book it').width, sp = ctx.measureText('Book ').width, base = kit.capMiddle(ctx, pcy);
+    const from = [{ x: pcx - lw / 2, size: ls }, { x: pcx - lw / 2 + sp, size: ls }];
+    sweep('Book it', T.bookOpen, T.bookOpen + BOOK_GROW, (tt) => { const p = EXPO_IO(r(tt, T.bookOpen, BOOK_GROW)); return bigLay(ctx, values, 2).words.map((w, j) => posed({ t: w.t, x: (from[j] || from[0]).x, base, size: (from[j] || from[0]).size }, w, p, p, lerp(600, WT, p))); });
+  }
+  checks.push({ name: 'no word passes through another (folds, the hook, Book it)', ok: !hit, detail: hit || 'clear on every frame' });
+  // enough leading that descenders clear: in every request and headline, no line's ink reaches the line below
+  let close = Infinity, closeAt = '';
+  const lays = [['hook', hookLay(ctx)]];
+  for (let i = 0; i < 4; i++) lays.push([`request ${i + 1}`, bigLay(ctx, values, i)], [`headline ${i + 1}`, bandLay(ctx, values, i)]);
+  for (const [name, L] of lays) {
+    const boxes = L.words.map((w) => ({ line: w.line, box: inkBox(w.t, w.x, w.base, w.size) }));
+    for (const a of boxes) for (const bb of boxes) {
+      if (bb.line !== a.line + 1 || Math.min(a.box.r, bb.box.r) <= Math.max(a.box.l, bb.box.l)) continue;
+      const gap = bb.box.t - a.box.b;
+      if (gap < close) { close = gap; closeAt = name; }
+    }
+  }
+  checks.push({ name: 'leading: descenders clear the line below', ok: close > 2, detail: close === Infinity ? 'single lines' : `${close.toFixed(1)}px at its closest (${closeAt})` });
+  // (the first request now rises inside the swelling disc, clipped to it, so the ember opening pulls it in: founder :06)
+  checks.push({ name: 'first request starts inside the swelling disc, after it opens', ok: Q1_WORDS() > T.iris && irisRadius(Q1_WORDS()) > SEND_BIG.r * 2, detail: `disc ${irisRadius(Q1_WORDS()).toFixed(0)} px when the words start` });
+  return checks;
+}
+
+const KEY = [];
+window.template = {
+  fps: FPS, duration: DURATION, sizes: { '9:16': [W, H] }, width: W, height: H,
+  defaults, prepare, seek, T, cues, selfChecks,
+  fields: [
+    { id: 'q1', type: 'text', label: 'Request 1 (on ember; " / " breaks a line)', maxLength: 64 },
+    { id: 'q2', type: 'text', label: 'Request 2 (on ink)', maxLength: 32 },
+    { id: 'q4', type: 'text', label: 'Request 4 (on linen; *word* in ember)', maxLength: 32 },
+  ],
+  cuts: [],
+  keyTimes: KEY,
+  music: { bpm: BPM, style: 'synth', sections: [{ from: 0, to: 2.75, pad: 0.6, hats: 0.25 }, { from: 2.75, to: 15, kick: 0.8, clap: 0.4, hats: 0.5, bass: 0.7, pad: 0.5 }], ending: { at: T.land } },
+};
+// key times: every transition's start, middle and end, and each hold
+KEY.push(+(T.rise + 0.3).toFixed(3), +T.iso.toFixed(3), +(T.type + 0.5).toFixed(3), +(T.expand + 0.2).toFixed(3), +(T.expand + 0.45).toFixed(3), +(T.expand + T.expandDur).toFixed(3),
+  +(T.iris + 0.2).toFixed(3), +(T.iris + 0.45).toFixed(3), +(T.iris + 0.9).toFixed(3));
+T.fold.forEach((f, i) => KEY.push(+(T.press[i]).toFixed(3), +(f + 0.3).toFixed(3), +(f + 0.5).toFixed(3), +(f + 1.1).toFixed(3)));
+[1, 3].forEach((i) => KEY.push(+(T.reopen[i] + 0.3).toFixed(3), +(T.reopen[i] + 0.5).toFixed(3), +(T.reopen[i] + 1.0).toFixed(3)));
+KEY.push(+T.book.toFixed(3), +(T.bookOpen + 0.35).toFixed(3), +(T.bookOpen + 0.55).toFixed(3), +(T.bookOpen + 1.0).toFixed(3), +T.booked.toFixed(3), +(T.done + 0.6).toFixed(3),
+  +(T.toComp + 0.3).toFixed(3), +(T.toComp + 0.5).toFixed(3), +(T.endType + 0.6).toFixed(3), +T.endTurn.toFixed(3), +(T.glide + 0.4).toFixed(3), 29.0);
+KEY.sort((x, y) => x - y);
+const qs = new URLSearchParams(location.search);
+if (window.parent === window && !qs.has('render')) prepare(defaults()).then(() => {
+  if (qs.has('t')) { seek(+qs.get('t')); return; }
+  const t0 = performance.now(); const loop = () => { seek(((performance.now() - t0) / 1000) % DURATION); requestAnimationFrame(loop); }; loop();
+});
+})();
+</script>
