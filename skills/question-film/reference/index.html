@@ -27,10 +27,10 @@ const { clamp, lerp, loadFont, loadImage } = window.kit;
 const W = 1080, H = 1920, FPS = 30, BPM = 132, BEAT = 60 / BPM;
 const b = (n) => n * BEAT;
 const canvas = document.getElementById('c');
-const g = canvas.getContext('2d', { willReadFrequently: true });
+const g = kit.textContext(canvas.getContext('2d', { willReadFrequently: true }));
 // helper canvases (CPU-backed like the film's own): a plane for the 3D turn, and a snapshot layer
 const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
-const gb = buf.getContext('2d', { willReadFrequently: true });
+const gb = kit.textContext(buf.getContext('2d', { willReadFrequently: true }));
 
 // ADAPT: the brand's tokens (Ostlery's brand guide): paper the app's ground, sand its quiet fill (the composer's idle send
 // button, the last request's field), card the input's white, ink its text, soft its placeholder grey, line the input's
@@ -132,12 +132,12 @@ function shadowOnly(c, x, y, w, h, rad, k) {
   c.save(); shadow(c, k); c.shadowOffsetX = 4000; rrect(c, x - 4000, y, w, h, rad); c.fillStyle = '#000'; c.fill(); c.restore();
 }
 // a capture's region (css px within the capture) drawn at dx, dy with css scale s
-function shot(c, name, sx, sy, sw, sh, dx, dy, s) {
+function shot(c, name, sx, sy, sw, sh, dx, dy, s) { s = kit.copyText(s);
   const cap = SCR.captures[name], img = S[name], k = cap.scale;
   c.drawImage(img, sx * k, sy * k, sw * k, sh * k, dx, dy, sw * s, sh * s);
 }
 // a panel: a capture region on a shadowed rounded card
-function card(c, name, sx, sy, sw, sh, dx, dy, s, rad, k = 1) {
+function card(c, name, sx, sy, sw, sh, dx, dy, s, rad, k = 1) { s = kit.copyText(s);
   c.save(); shadow(c, k); rrect(c, dx, dy, sw * s, sh * s, rad); c.fillStyle = C.paper; c.fill(); c.restore();
   c.save(); rrect(c, dx, dy, sw * s, sh * s, rad); c.clip(); shot(c, name, sx, sy, sw, sh, dx, dy, s); c.restore();
 }
@@ -191,8 +191,8 @@ function intoBuf(draw, shade = 0) {
 const MARGIN = 64, TRACK = -0.035, LEAD = 0.98, WT = 880, MEASURE = W - 2 * MARGIN;
 let CAP_R = 0.7;
 // "A weekend / lake cabin," → lines of words; *word* is the accent
-function parseLines(text) {
-  return String(text).split(/\s+\/\s+/).map((ln) => ln.trim().split(/\s+/).filter(Boolean).map((w) => {
+function parseLines(text) { text = kit.copyText(text);
+  return String(text).split(/\s+\/\s+/).map((ln) => kit.words(ln.trim(), /\s+/).filter(Boolean).map((w) => {
     const acc = /^\*.*\*$/.test(w);
     return { t: acc ? w.slice(1, -1) : w, acc };
   })).filter((ln) => ln.length);
@@ -215,7 +215,17 @@ function breakInto(c, words, n) {
 }
 const layCache = new Map();
 // o: { max, top | cy, maxLines, availH, auto (rewrap even if the text has breaks) }
-function layout(c, text, o) {
+function layout(c, text, o) { text = kit.copyText(text);
+  if(kit.hasCJK(text)) {
+    const fit=kit.fitText(c,{text:(o.auto?text.replace(/\n/g,kit.textLanguage(text)==='ko'?' ':''):text).replace(/\s+\/\s+/g,'\n'),fontFor:s=>SANS(s,WT),maxWidth:MEASURE,maxHeight:o.availH||Infinity,maxLines:o.maxLines||5,maxSize:o.max,minSize:40,lineHeight:1.1});
+    const top=o.top??(o.cy-(fit.lines.length-1)*fit.lineHeight/2-fit.size*.36),words=[];
+    c.font=SANS(fit.size,WT);c.letterSpacing='0px';
+    // A fold pairs the same glyphs across two independently wrapped layouts.
+    // Keep whitespace as advance, so Japanese/Chinese phrasing can change at
+    // the band width without changing the identity/count of animated pieces.
+    fit.lines.forEach((line,i)=>line.words.forEach(w=>{let prefix='';for(const ch of w.text){const x=MARGIN+w.x+c.measureText(prefix).width;prefix+=ch;if(!/\s/u.test(ch))words.push({t:ch,acc:w.em,x,base:top+fit.size*.88+i*fit.lineHeight,width:c.measureText(ch).width,line:i,size:fit.size});}}));
+    return {size:fit.size,words,lines:fit.lines.length,top,bottom:top+fit.size*.88+(fit.lines.length-1)*fit.lineHeight};
+  }
   const key = JSON.stringify([text, o]);
   if (layCache.has(key)) return layCache.get(key);
   let lines = parseLines(text);
@@ -245,7 +255,7 @@ function layout(c, text, o) {
   layCache.set(key, L);
   return L;
 }
-function drawWord(c, text, x, base, size, wt, col, track = TRACK) {
+function drawWord(c, text, x, base, size, wt, col, track = TRACK) { text = kit.copyText(text);
   c.font = SANS(size, wt); c.letterSpacing = `${track * size}px`; c.fillStyle = col; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
   c.fillText(text, x, base);
   c.letterSpacing = '0px';
@@ -316,7 +326,7 @@ function composerAt(t) {
   const p = MOVE(r(t, T.iso + 0.04, 0.62));
   return { x: lerp(COMP.x, COMP_C.x, p), y: lerp(COMP.y, COMP_C.y, p) };
 }
-function typedCount(t, at, text, per = T.perChar) { return Math.floor(clamp((t - at) / per, 0, text.length)); }
+function typedCount(t, at, text, per = T.perChar) { text = kit.copyText(text); return Math.floor(clamp((t - at) / per, 0, text.length)); }
 function drawComposer(c, x, y, scale, name, n, sendLit, pr) {
   const cap = n > 0 ? `${name}-${String(n).padStart(2, '0')}` : 'composer';
   c.save(); rrect(c, x, y, 350 * scale, 262.5 * scale, 28 * scale); c.clip();
@@ -338,7 +348,7 @@ function drawComposer(c, x, y, scale, name, n, sendLit, pr) {
     icon(c, ICON_UP, sx, sy, 24 * scale * k, sendLit < 1 ? mix(C.soft, '#FFFFFF', sendLit) : '#FFFFFF', 1.6 * scale);
   }
 }
-function caret(c, x, y, scale, text, n, t, typedEnd, until) {
+function caret(c, x, y, scale, text, n, t, typedEnd, until) { text = kit.copyText(text);
   if (t >= until) return;
   const on = t < typedEnd + 0.1 || Math.floor((t - typedEnd - 0.1) / 0.5) % 2 === 1;
   if (!on) return;
@@ -373,7 +383,7 @@ function sceneOpen(c, t) {
 function typedWords(c) {
   const out = []; c.font = SANS(TXT.size * K, 400); c.letterSpacing = '0px';
   let i = 0;
-  for (const w of HOOK_TEXT.split(' ')) {
+  for (const w of kit.words(HOOK_TEXT, ' ')) {
     const at = HOOK_TEXT.indexOf(w, i); i = at + w.length;
     out.push({ t: w, x: COMP_C.x + TXT.x * K + c.measureText(HOOK_TEXT.slice(0, at)).width, base: COMP_C.y + TXT.base * K, size: TXT.size * K });
   }
@@ -498,7 +508,7 @@ function drawPill(c, x, y, w, h, fill) {
 // answer 3: the cabin, then the booking card: Booking (a spinner) → Booked, then Done and the trip card
 const A3 = { s: 2.62, w: 390, h: 225.6, photo: { y: 390, h: 700 }, y: 1140 };
 const PILL = { x: 16, y: 16, h: 44, pad: 20, gap: 8, booked: 119.19, allX: 143.19, allW: 111.08 };
-function bookPill(c, t, x, y, s) {
+function bookPill(c, t, x, y, s) { s = kit.copyText(s);
   const m = MOVE(r(t, T.booked, 0.34));
   c.font = SANS(15 * s, 600); c.letterSpacing = '0px';
   const twBooking = c.measureText('Booking').width / s;
@@ -890,7 +900,7 @@ function selfChecks(values = defaults()) {
 }
 
 const KEY = [];
-window.template = {
+window.template = kit.film({
   fps: FPS, duration: DURATION, sizes: { '9:16': [W, H] }, width: W, height: H,
   defaults, prepare, seek, T, cues, selfChecks,
   fields: [
@@ -901,7 +911,7 @@ window.template = {
   cuts: [],
   keyTimes: KEY,
   music: { bpm: BPM, style: 'synth', sections: [{ from: 0, to: 2.75, pad: 0.6, hats: 0.25 }, { from: 2.75, to: 15, kick: 0.8, clap: 0.4, hats: 0.5, bass: 0.7, pad: 0.5 }], ending: { at: T.land } },
-};
+});
 // key times: every transition's start, middle and end, and each hold
 KEY.push(+(T.rise + 0.3).toFixed(3), +T.iso.toFixed(3), +(T.type + 0.5).toFixed(3), +(T.expand + 0.2).toFixed(3), +(T.expand + 0.45).toFixed(3), +(T.expand + T.expandDur).toFixed(3),
   +(T.iris + 0.2).toFixed(3), +(T.iris + 0.45).toFixed(3), +(T.iris + 0.9).toFixed(3));
@@ -911,7 +921,7 @@ KEY.push(+T.book.toFixed(3), +(T.bookOpen + 0.35).toFixed(3), +(T.bookOpen + 0.5
   +(T.toComp + 0.3).toFixed(3), +(T.toComp + 0.5).toFixed(3), +(T.endType + 0.6).toFixed(3), +T.endTurn.toFixed(3), +(T.glide + 0.4).toFixed(3), 29.0);
 KEY.sort((x, y) => x - y);
 const qs = new URLSearchParams(location.search);
-if (window.parent === window && !qs.has('render')) prepare(defaults()).then(() => {
+if (window.parent === window && !qs.has('render')) window.template.prepare(defaults()).then(() => {
   if (qs.has('t')) { seek(+qs.get('t')); return; }
   const t0 = performance.now(); const loop = () => { seek(((performance.now() - t0) / 1000) % DURATION); requestAnimationFrame(loop); }; loop();
 });

@@ -5,6 +5,8 @@ description: Make a 30-second tall (9:16) film of a product that answers request
 
 # Question film
 
+For Japanese, Korean or Chinese product pages, keep the copy in that language and set the film’s `lang` to the page’s `<html lang>`; bundled Noto faces and phrase breaks handle the text.
+
 A 30-second tall film for a product you ask things of. The whole frame is the product's input field. The user's
 question fills it, big and flush left, with the field's send button in its corner. Sent, the question folds up into a
 headline band at the top and the product's real answer rises under it, so every answer is shown with the question it

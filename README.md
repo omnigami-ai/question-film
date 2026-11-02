@@ -2,7 +2,7 @@
 
 Your users’ questions fill the screen, then fold up over your product’s real answers.
 
-A 30-second tall film for products you ask things of. Each question fills the screen in your own input’s style, big and flush left. Sent, it folds up into a headline band as your product’s real answer rises under it, so every answer shows the question it answers. A real button in an answer grows into the next request, and the last band closes back into your own input, where your line is typed before your logo. Style inspired by Spotify’s video; an independent style study, not affiliated with or endorsed by Spotify.
+A tall film for products you ask things of. Each question fills the screen in your own input’s style, then folds into a headline as your product’s real answer rises under it, so every answer shows its question.
 
 Watch it play live, and change its words, at [omnigami.ai/skills/question-film](https://omnigami.ai/skills/question-film).
 
