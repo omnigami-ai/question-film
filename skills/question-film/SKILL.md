@@ -5,6 +5,8 @@ description: Make a 30-second tall (9:16) film of a product that answers request
 
 # Question film
 
+**If several skills could do this:** when the request doesn't name this skill and your agent also has other omnigami skills that make the same kind of thing (other launch films, shots, decks or mockups), list them by name and ask which one the user wants before you start. If it's named, or it's the only one installed, go ahead.
+
 For Japanese, Korean or Chinese product pages, keep the copy in that language and set the film’s `lang` to the page’s `<html lang>`; bundled Noto faces and phrase breaks handle the text.
 
 A 30-second tall film for a product you ask things of. The whole frame is the product's input field. The user's
