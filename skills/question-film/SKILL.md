@@ -1,6 +1,10 @@
 ---
 name: question-film
-description: Make a 30-second tall (9:16) film of a product that answers requests, in code, in the grammar of Spotify's "Now you can talk to Spotify" ad (an independent style study) - the user's questions fill the screen in the product's own input-field style, each one folds up into a headline band as the product's real answer rises under it, the next question drops down over the answer, a real button in an answer opens into the next request, and the film closes into the product's own input with its line typed in and the mark and wordmark lockup. Renders a tall MP4 with music. Use when the user asks for a question film, a vertical or tall app ad, a Reel/TikTok/Shorts ad for an assistant, search, chat or booking product, or a Spotify-style "talk to it" film of their product.
+description: >-
+  Tall app ad for a product that answers requests: your users' questions fill the screen in your own input style, each
+  folding up as your product's real answer rises under it, closing on your input and lockup. 30 seconds, 9:16, with
+  music; an independent style study of Spotify's "Now you can talk to Spotify" ad. Use for a vertical app ad, a Reel,
+  TikTok or Shorts ad for an assistant, search, chat or booking product, or a "talk to it" film.
 ---
 
 # Question film
